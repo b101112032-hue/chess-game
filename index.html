@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 藝術禪意西洋棋 - MQTT 狀態與雙人連線</title>
+    <!-- 引入 Paho MQTT 客戶端 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <style>
+        :root {
+            --wood-dark: #3e2723;
+            --wood-medium: #5d4037;
+            --wood-light: #d7ccc8;
+            --gold: #d4af37;
+            --bg-grad-1: #1a1c23;
+            --bg-grad-2: #2c163a;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-grad-1), var(--bg-grad-2));
+            color: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow-x: hidden;
+            position: relative;
+            padding: 20px 0;
+        }
+
+        /* 藝術背景光影流動效果 */
+        body::before {
+            content: '';
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(212, 175, 55, 0.15) 0%, rgba(138, 43, 226, 0.05) 60%, transparent 100%);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 0;
+            pointer-events: none;
+            animation: pulseGlow 8s infinite alternate ease-in-out;
+        }
+
+        @keyframes pulseGlow {
+            0% { transform: translate(-50%, -50%) scale(0.9); opacity: 0.6; }
+            100% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+        }
+
+        /* 頂部標題 */
+        header {
+            position: relative;
+            z-index: 2;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            letter-spacing: 3px;
+            background: linear-gradient(to right, #fff, var(--gold));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: #b0bec5;
+            margin-top: 5px;
+        }
+
+        /* MQTT 連線狀態提示橫幅 */
+        .mqtt-status-banner {
+            position: relative;
+            z-index: 2;
+            background: rgba(30, 30, 45, 0.9);
+            border: 1px solid rgba(212, 175, 55, 0.4);
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        .mqtt-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #f44336;
+            box-shadow: 0 0 6px #f44336;
+            transition: all 0.3s;
+        }
+
+        .mqtt-dot.connected {
+            background-color: #4caf50;
+            box-shadow: 0 0 10px #4caf50;
+        }
+
+        /* 主遊戲區塊：左右玩家面板 + 中間棋盤 */
+        .game-container {
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 20px;
+            position: relative;
+            z-index: 2;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        /* 玩家面板 (左/右) */
+        .player-panel {
+            background: rgba(30, 30, 40, 0.75);
+            border: 1px solid rgba(212, 175, 55, 0.3);
+            border-radius: 15px;
+            padding: 20px;
+            width: 220px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        .player-panel.active-turn {
+            border-color: var(--gold);
+            box-shadow: 0 0 20px rgba(212, 175, 55, 0.4);
+            transform: translateY(-3px);
+        }
+
+        .player-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #444, #222);
+            margin: 0 auto 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.3rem;
+            border: 2px solid var(--gold);
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #f44336;
+            margin-right: 5px;
+        }
+
+        .status-dot.online {
+            background-color: #4caf50;
+            box-shadow: 0 0 6px #4caf50;
+        }
+
+        .status-text {
+            font-size: 0.8rem;
+            color: #cfd8dc;
+            margin-top: 6px;
+        }
+
+        /* 聊天室專區 */
+        .chat-box {
+            margin-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 8px;
+            text-align: left;
+        }
+
+        .chat-messages {
+            height: 100px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
+            padding: 6px;
+            font-size: 0.75rem;
+            margin-bottom: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .chat-msg {
+            word-break: break-all;
+            color: #e0e0e0;
+        }
+
+        .chat-msg span {
+            color: var(--gold);
+            font-weight: bold;
+        }
+
+        .chat-input-group {
+            display: flex;
+            gap: 4px;
+        }
+
+        .chat-input-group input {
+            flex: 1;
+            padding: 4px 6px;
+            font-size: 0.75rem;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(212,175,55,0.3);
+            border-radius: 4px;
+            color: white;
+            outline: none;
+        }
+
+        .chat-input-group button {
+            padding: 4px 8px;
+            font-size: 0.75rem;
+        }
+
+        /* 3D 立體木紋棋盤 */
+        .board-wrapper {
+            perspective: 1200px;
+        }
+
+        .chess-board {
+            display: grid;
+            grid-template-columns: repeat(8, 56px);
+            grid-template-rows: repeat(8, 56px);
+            border: 8px solid var(--wood-dark);
+            border-radius: 6px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.8), 
+                        inset 0 0 20px rgba(0,0,0,0.5);
+            transform: rotateX(15deg);
+            transform-style: preserve-3d;
+            background: var(--wood-dark);
+        }
+
+        .square {
+            width: 56px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            transition: background 0.2s;
+        }
+
+        .square.light {
+            background-color: #f0d9b5;
+            color: #222;
+        }
+
+        .square.dark {
+            background-color: #b58863;
+            color: #222;
+        }
+
+        .square.selected {
+            background-color: rgba(255, 215, 0, 0.6) !important;
+        }
+
+        .piece {
+            filter: drop-shadow(0 5px 5px rgba(0,0,0,0.4));
+            transition: transform 0.2s;
+        }
+
+        .piece:hover {
+            transform: scale(1.1) translateY(-3px);
+        }
+
+        /* 控制台與設定 */
+        .control-panel {
+            position: relative;
+            z-index: 2;
+            background: rgba(20, 20, 30, 0.85);
+            border: 1px solid rgba(212, 175, 55, 0.2);
+            padding: 12px 20px;
+            border-radius: 12px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px);
+            max-width: 720px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        input[type="text"] {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(212, 175, 55, 0.4);
+            padding: 8px 12px;
+            border-radius: 6px;
+            color: white;
+            outline: none;
+            font-size: 0.9rem;
+            width: 130px;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--gold);
+        }
+
+        button {
+            background: linear-gradient(135deg, #d4af37, #aa820a);
+            color: #1a1c23;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 10px rgba(212, 175, 55, 0.3);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(212, 175, 55, 0.5);
+        }
+
+        button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        button.secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        #game-log {
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #b0bec5;
+            text-align: center;
+            min-height: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>GRAND CHESS 3D</h1>
+        <div class="subtitle">Artistic Zen Edition · MQTT Live Multiplay & AI</div>
+    </header>
+
+    <!-- 全域 MQTT 狀態列 -->
+    <div class="mqtt-status-banner">
+        <div class="mqtt-dot" id="mqtt-global-dot"></div>
+        <span id="mqtt-global-text">MQTT 伺服器狀態：尚未連線（請於下方輸入房間並加入）</span>
+    </div>
+
+    <div class="game-container">
+        <!-- 左側玩家 (白方) -->
+        <div class="player-panel" id="panel-white">
+            <div class="player-avatar">♔</div>
+            <h3 id="white-title">白方 (P1)</h3>
+            <div class="status-text">
+                <span class="status-dot" id="dot-white"></span><span id="text-white">等待中</span>
+            </div>
+        </div>
+
+        <!-- 中間 3D 立體棋盤 -->
+        <div class="board-wrapper">
+            <div class="chess-board" id="chess-board"></div>
+        </div>
+
+        <!-- 右側玩家 (黑方 / AI) 與 聊天室 -->
+        <div class="player-panel" id="panel-black">
+            <div class="player-avatar">♚</div>
+            <h3 id="right-player-title">黑方 (AI 機器人)</h3>
+            <div class="status-text">
+                <span class="status-dot" id="dot-black"></span><span id="text-black">AI 待命</span>
+            </div>
+
+            <!-- 互動聊天室 -->
+            <div class="chat-box">
+                <div class="chat-messages" id="chat-messages">
+                    <div class="chat-msg"><span>系統：</span>歡迎來到對戰聊天室</div>
+                </div>
+                <div class="chat-input-group">
+                    <input type="text" id="chat-input" placeholder="聊天..." onkeypress="handleChatKeyPress(event)">
+                    <button onclick="sendChatMessage()">發送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 控制面板 -->
+    <div class="control-panel">
+        <div class="control-group">
+            <label style="font-size: 0.85rem; color:#b0bec5;">模式:</label>
+            <button id="mode-btn" onclick="toggleMode()">切換: 對戰 AI</button>
+        </div>
+        <div class="control-group">
+            <input type="text" id="room-input" placeholder="輸入房間代碼" value="chess_room_108">
+            <button onclick="joinRoom()">加入房間</button>
+        </div>
+        <div class="control-group">
+            <button class="secondary" onclick="resetGame()">重新開局</button>
+        </div>
+    </div>
+
+    <div id="game-log">狀態：請選擇模式或加入線上房間開始對戰</div>
+
+    <script>
+        const initialBoard = [
+            ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
+            ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+            ['', '', '', '', '', '', '', ''],
+            ['', '', '', '', '', '', '', ''],
+            ['', '', '', '', '', '', '', ''],
+            ['', '', '', '', '', '', '', ''],
+            ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+            ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']
+        ];
+
+        let board = JSON.parse(JSON.stringify(initialBoard));
+        let turn = 'w';
+        let selectedSquare = null;
+        let gameMode = 'ai'; // 'ai' 或 'online'
+        let myColor = 'w'; // 線上模式自己的顏色 ('w' 或 'b')
+        let client = null;
+        let roomId = 'chess_room_108';
+        const clientId = 'chess_user_' + Math.random().toString(36).substring(2, 7);
+        const playerName = '玩家_' + Math.floor(Math.random() * 900 + 100);
+
+        const pieceSymbols = {
+            'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚', 'p': '♟',
+            'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔', 'P': '♙'
+        };
+
+        function renderBoard() {
+            const boardEl = document.getElementById('chess-board');
+            boardEl.innerHTML = '';
+
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const square = document.createElement('div');
+                    square.className = `square ${(r + c) % 2 === 0 ? 'light' : 'dark'}`;
+                    square.dataset.row = r;
+                    square.dataset.col = c;
+
+                    if (selectedSquare && selectedSquare.row === r && selectedSquare.col === c) {
+                        square.classList.add('selected');
+                    }
+
+                    const piece = board[r][c];
+                    if (piece) {
+                        const pieceSpan = document.createElement('span');
+                        pieceSpan.className = 'piece';
+                        pieceSpan.textContent = pieceSymbols[piece];
+                        square.appendChild(pieceSpan);
+                    }
+
+                    square.addEventListener('click', () => handleSquareClick(r, c));
+                    boardEl.appendChild(square);
+                }
+            }
+
+            document.getElementById('panel-white').classList.toggle('active-turn', turn === 'w');
+            document.getElementById('panel-black').classList.toggle('active-turn', turn === 'b');
+        }
+
+        function handleSquareClick(r, c) {
+            const piece = board[r][c];
+            const isWhitePiece = piece && piece === piece.toUpperCase();
+            const isBlackPiece = piece && piece === piece.toLowerCase();
+
+            // 線上模式驗證是否輪到自己以及是否執此顏色
+            if (gameMode === 'online') {
+                if (turn !== myColor) {
+                    showLog("目前不是你的回合！");
+                    return;
+                }
+                if ((myColor === 'w' && !isWhitePiece && selectedSquare === null) || 
+                    (myColor === 'b' && !isBlackPiece && selectedSquare === null)) {
+                    showLog("你只能操作自己分配到的棋子！");
+                    return;
+                }
+            }
+
+            if (selectedSquare) {
+                if ((turn === 'w' && isWhitePiece) || (turn === 'b' && isBlackPiece)) {
+                    selectedSquare = { row: r, col: c };
+                    renderBoard();
+                    return;
+                }
+
+                movePiece(selectedSquare.row, selectedSquare.col, r, c);
+                selectedSquare = null;
+                renderBoard();
+            } else {
+                if ((turn === 'w' && isWhitePiece) || (turn === 'b' && isBlackPiece)) {
+                    selectedSquare = { row: r, col: c };
+                    renderBoard();
+                }
+            }
+        }
+
+        function movePiece(fromR, fromC, toR, toC) {
+            const movingPiece = board[fromR][fromC];
+            board[toR][toC] = movingPiece;
+            board[fromR][fromC] = '';
+
+            turn = (turn === 'w') ? 'b' : 'w';
+            showLog(`棋步：${String.fromCharCode(97 + fromC)}${8 - fromR} 移動到 ${String.fromCharCode(97 + toC)}${8 - toR}`);
+
+            // 線上模式發送 MQTT 棋步
+            if (gameMode === 'online' && client && client.isConnected()) {
+                const message = new Paho.MQTT.Message(JSON.stringify({
+                    type: 'move',
+                    sender: clientId,
+                    board: board,
+                    turn: turn
+                }));
+                message.destinationName = `jjlab/chess/${roomId}`;
+                client.send(message);
+            }
+
+            renderBoard();
+
+            // AI 模式
+            if (gameMode === 'ai' && turn === 'b') {
+                setTimeout(makeAIMove, 500);
+            }
+        }
+
+        function makeAIMove() {
+            let moves = [];
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    if (board[r][c] && board[r][c] === board[r][c].toLowerCase()) {
+                        for (let dr = -1; dr <= 1; dr++) {
+                            for (let dc = -1; dc <= 1; dc++) {
+                                let nr = r + dr, nc = c + dc;
+                                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                                    if (board[nr][nc] === '' || board[nr][nc] === board[nr][nc].toUpperCase()) {
+                                        moves.push({ fromR: r, fromC: c, toR: nr, toC: nc });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (moves.length > 0) {
+                let randomMove = moves[Math.floor(Math.random() * moves.length)];
+                board[randomMove.toR][randomMove.toC] = board[randomMove.fromR][randomMove.fromC];
+                board[randomMove.fromR][randomMove.fromC] = '';
+                turn = 'w';
+                showLog("AI 已經完成下棋。");
+                renderBoard();
+            }
+        }
+
+        function toggleMode() {
+            gameMode = (gameMode === 'ai') ? 'online' : 'ai';
+            const btn = document.getElementById('mode-btn');
+            const rightTitle = document.getElementById('right-player-title');
+            
+            if (gameMode === 'online') {
+                btn.textContent = "切換: 與AI對戰";
+                rightTitle.textContent = "黑方 (線上玩家)";
+                showLog("已切換為線上模式，請輸入房間代碼加入。");
+            } else {
+                btn.textContent = "切換: 線上對戰";
+                rightTitle.textContent = "黑方 (AI 機器人)";
+                document.getElementById('dot-black').classList.add('online');
+                document.getElementById('text-black').textContent = "AI 運作中";
+                
+                // 重置 MQTT 狀態顯示
+                document.getElementById('mqtt-global-dot').classList.remove('connected');
+                document.getElementById('mqtt-global-text').textContent = "MQTT 狀態：已切換至單人 AI 模式";
+                showLog("已切換為單人 AI 模式。");
+                resetGame();
+            }
+        }
+
+        function joinRoom() {
+            roomId = document.getElementById('room-input').value.trim();
+            if (!roomId) {
+                alert("請輸入有效的房間代碼！");
+                return;
+            }
+
+            if (gameMode !== 'online') {
+                alert("請先切換至「線上對戰」模式再加入房間！");
+                return;
+            }
+
+            showLog(`正在連線到 MQTT 伺服器並加入房間: ${roomId}...`);
+
+            // 連線至公開測試 MQTT 伺服器 (WSS 安全埠 8084)
+            client = new Paho.MQTT.Client("broker.emqx.io", 8084, "chess_client_" + Math.random().toString(36).substring(2, 7));
+
+            client.onConnectionLost = (responseObject) => {
+                showLog("MQTT 連線中斷: " + responseObject.errorMessage);
+                document.getElementById('mqtt-global-dot').classList.remove('connected');
+                document.getElementById('mqtt-global-text').textContent = "MQTT 狀態：連線中斷";
+                document.getElementById('dot-white').classList.remove('online');
+                document.getElementById('text-white').textContent = "連線中斷";
+            };
+
+            client.onMessageArrived = (message) => {
+                try {
+                    const data = JSON.parse(message.payloadString);
+                    if (data.type === 'move' && data.sender !== clientId) {
+                        board = data.board;
+                        turn = data.turn;
+                        renderBoard();
+                        showLog("收到對手棋步，同步更新。");
+                    } else if (data.type === 'chat') {
+                        appendChatMessage(data.name, data.text);
+                    } else if (data.type === 'join' && data.sender !== clientId) {
+                        // 當對手加入時，自動指派為黑方並更新狀態
+                        document.getElementById('dot-black').classList.add('online');
+                        document.getElementById('text-black').textContent = `${data.name} (線上)`;
+                        appendChatMessage("系統", `${data.name} 已加入房間，對戰開始！`);
+                    }
+                } catch (e) {
+                    console.error("解析訊息失敗", e);
+                }
+            };
+
+            client.connect({
+                useSSL: true,
+                onSuccess: () => {
+                    showLog("成功連線到 MQTT 伺服器！");
+                    client.subscribe(`jjlab/chess/${roomId}`);
+
+                    // 更新全域 MQTT 狀態列
+                    document.getElementById('mqtt-global-dot').classList.add('connected');
+                    document.getElementById('mqtt-global-text').textContent = `MQTT 狀態：已連線至房間 [ ${roomId} ]`;
+
+                    // 更新左側玩家為白方
+                    document.getElementById('dot-white').classList.add('online');
+                    document.getElementById('text-white').textContent = `${playerName} (白方)`;
+                    myColor = 'w';
+
+                    // 廣播加入訊息給對手
+                    const joinMsg = new Paho.MQTT.Message(JSON.stringify({
+                        type: 'join',
+                        sender: clientId,
+                        name: playerName
+                    }));
+                    joinMsg.destinationName = `jjlab/chess/${roomId}`;
+                    client.send(joinMsg);
+
+                    appendChatMessage("系統", "成功加入房間，等待對手連線...");
+                },
+                onFailure: (err) => {
+                    showLog("連線失敗: " + err.errorMessage);
+                    document.getElementById('mqtt-global-text').textContent = "MQTT 狀態：連線失敗 (" + err.errorMessage + ")";
+                }
+            });
+        }
+
+        function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            if (!client || !client.isConnected()) {
+                alert("請先加入線上房間才能發送聊天訊息！");
+                return;
+            }
+
+            const message = new Paho.MQTT.Message(JSON.stringify({
+                type: 'chat',
+                sender: clientId,
+                name: playerName,
+                text: text
+            }));
+            message.destinationName = `jjlab/chess/${roomId}`;
+            client.send(message);
+
+            appendChatMessage(playerName, text);
+            input.value = '';
+        }
+
+        function handleChatKeyPress(e) {
+            if (e.key === 'Enter') {
+                sendChatMessage();
+            }
+        }
+
+        function appendChatMessage(name, text) {
+            const chatMessages = document.getElementById('chat-messages');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'chat-msg';
+            msgDiv.innerHTML = `<span>${name}：</span>${text}`;
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function resetGame() {
+            board = JSON.parse(JSON.stringify(initialBoard));
+            turn = 'w';
+            selectedSquare = null;
+            renderBoard();
+            showLog("棋局已重設。");
+        }
+
+        function showLog(text) {
+            document.getElementById('game-log').textContent = "狀態：" + text;
+        }
+
+        renderBoard();
+    </script>
+</body>
+</html>
